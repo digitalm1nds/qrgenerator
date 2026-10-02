@@ -494,14 +494,14 @@
       <div class="row">
         <div class="field">
           <label for="bc-prefix">Store name or initials</label>
-          <input type="text" id="bc-prefix" placeholder="Name" maxlength="20" autocomplete="off" />
+          <input type="text" id="bc-prefix" placeholder="NEE" maxlength="20" autocomplete="off" />
         </div>
         <div class="field">
           <label for="bc-qty">How many barcodes</label>
           <input type="number" id="bc-qty" min="1" max="100" value="1" />
         </div>
       </div>
-      <p class="hint" id="bc-info">Codes will look like <strong>NAME-482913</strong>. Letters and digits only; accents and spaces are removed.</p>
+      <p class="hint" id="bc-info">Codes will look like <strong>NEE-482913</strong>. Letters and digits only; accents and spaces are removed.</p>
       <p class="bc-error" id="bc-error" hidden></p>
     </div>
 
@@ -861,7 +861,7 @@
 
       const pngBtn = document.createElement('button');
       pngBtn.className = 'dl-btn';
-      pngBtn.textContent = '↓ PNG';
+      pngBtn.textContent = '↓ PNG 40×30';
       pngBtn.addEventListener('click', () => downloadBarcodePNG(code));
 
       const copyBtn = document.createElement('button');
@@ -887,14 +887,120 @@
     showOutputs();
   }
 
-  // High-resolution PNG (double size) for printing on labels
-  function downloadBarcodePNG(code) {
+  /* ── PNG label: 40 × 30 mm, landscape ──
+     203 dpi is what thermal label printers use (8 dots per mm) → 320 × 240 px.
+     For an office laser/inkjet printer you can set LABEL_DPI to 300 (→ 472 × 354 px). */
+  const LABEL_MM  = { w: 40, h: 30 };
+  const LABEL_DPI = 203;
+  const mmToPx = mm => Math.round(mm / 25.4 * LABEL_DPI);
+
+  function renderLabelCanvas(code) {
+    const W = mmToPx(LABEL_MM.w);
+    const H = mmToPx(LABEL_MM.h);
+    const pad   = mmToPx(1.5);   // white border, also the scanner's quiet zone
+    const gap   = mmToPx(1);     // space between bars and text
+    const fg = document.getElementById('opt-fg').value;
+    const bg = document.getElementById('opt-bg').value;
+
+    // 1. How many modules (thinnest bar units) this code needs
+    const probe = document.createElement('canvas');
+    JsBarcode(probe, code, { format: 'CODE128', width: 1, height: 1, margin: 0, displayValue: false });
+    const modules = probe.width;
+
+    // 2. Whole pixels per module, as wide as the label allows (whole pixels = sharp bars)
+    const dots = Math.max(1, Math.floor((W - 2 * pad) / modules));
+
+    // 3. Text size: start at 3.5 mm and shrink until it fits the width
+    const ctx = document.createElement('canvas').getContext('2d');
+    let fontSize = mmToPx(3.5);
+    ctx.font = `bold ${fontSize}px monospace`;
+    while (ctx.measureText(code).width > W - 2 * pad && fontSize > 8) {
+      fontSize--;
+      ctx.font = `bold ${fontSize}px monospace`;
+    }
+
+    // 4. Bars fill the height left over
+    const barHeight = H - 2 * pad - fontSize - gap;
+    const bars = document.createElement('canvas');
+    JsBarcode(bars, code, {
+      format: 'CODE128', width: dots, height: barHeight, margin: 0,
+      displayValue: false, lineColor: fg, background: bg
+    });
+
+    // 5. Put it together on the 40 × 30 mm canvas
     const canvas = document.createElement('canvas');
-    JsBarcode(canvas, code, barcodeOptions(code, 2));
+    canvas.width = W;
+    canvas.height = H;
+    const c = canvas.getContext('2d');
+    c.imageSmoothingEnabled = false;
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+    c.drawImage(bars, Math.round((W - bars.width) / 2), pad);
+    c.fillStyle = fg;
+    c.font = `bold ${fontSize}px monospace`;
+    c.textAlign = 'center';
+    c.textBaseline = 'bottom';
+    c.fillText(code, W / 2, H - pad);
+
+    return { canvas, thin: dots < 2 };
+  }
+
+  // CRC-32, needed to write a valid PNG chunk
+  function crc32(bytes) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i];
+      for (let k = 0; k < 8; k++) crc = (crc & 1) ? (crc >>> 1) ^ 0xEDB88320 : crc >>> 1;
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  // Store the DPI inside the PNG (pHYs chunk) so programs print it at 40 × 30 mm
+  async function pngWithDpi(canvas, dpi) {
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const png = new Uint8Array(await blob.arrayBuffer());
+    const view = new DataView(png.buffer);
+
+    // Skip if the browser already wrote a pHYs chunk
+    for (let pos = 8; pos < png.length - 8; ) {
+      const len  = view.getUint32(pos);
+      const type = String.fromCharCode(...png.subarray(pos + 4, pos + 8));
+      if (type === 'pHYs') return blob;
+      if (type === 'IDAT') break;
+      pos += 12 + len;
+    }
+
+    const ppm = Math.round(dpi / 0.0254);            // pixels per metre
+    const chunk = new Uint8Array(21);
+    const cv = new DataView(chunk.buffer);
+    cv.setUint32(0, 9);                              // data length
+    chunk.set([0x70, 0x48, 0x59, 0x73], 4);          // "pHYs"
+    cv.setUint32(8, ppm);
+    cv.setUint32(12, ppm);
+    chunk[16] = 1;                                   // unit: metre
+    cv.setUint32(17, crc32(chunk.subarray(4, 17)));
+
+    const at = 33;                                   // PNG signature (8) + IHDR chunk (25)
+    const out = new Uint8Array(png.length + chunk.length);
+    out.set(png.subarray(0, at), 0);
+    out.set(chunk, at);
+    out.set(png.subarray(at), at + chunk.length);
+    return new Blob([out], { type: 'image/png' });
+  }
+
+  async function downloadBarcodePNG(code) {
+    const { canvas, thin } = renderLabelCanvas(code);
+    const blob = await pngWithDpi(canvas, LABEL_DPI);
     const a = document.createElement('a');
-    a.href = canvas.toDataURL('image/png');
+    a.href = URL.createObjectURL(blob);
     a.download = `${code}.png`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+
+    if (thin) {
+      showBcError(`"${code.split('-')[0]}" is long, so the bars on a 40 × 30 mm label are very thin ` +
+        'and may not scan. Initials of up to 5 letters work best.');
+    }
   }
 
   // Show the QR result or the barcode result, depending on the open tab
