@@ -6,6 +6,7 @@
   <title>QR Generator</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -16,8 +17,11 @@
       --accent:   #c8f135;
       --text:     #e8e8e0;
       --muted:    #5a5a50;
+      --danger:   #ff6b5a;
       --radius:   4px;
     }
+
+    [hidden] { display: none !important; }
 
     body {
       background: var(--bg);
@@ -93,6 +97,7 @@
     /* ── Tabs ── */
     .tabs {
       display: flex;
+      flex-wrap: wrap;
       gap: 4px;
       margin-bottom: 28px;
       background: var(--bg);
@@ -133,7 +138,7 @@
       color: var(--muted);
       margin-bottom: 8px;
     }
-    input[type="text"], input[type="url"], input[type="email"], input[type="tel"], textarea, select {
+    input[type="text"], input[type="url"], input[type="email"], input[type="tel"], input[type="number"], textarea, select {
       width: 100%;
       background: var(--bg);
       border: 1px solid var(--border);
@@ -154,6 +159,16 @@
 
     .field { margin-bottom: 20px; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .hint {
+      font-size: .72rem;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-top: -8px;
+      margin-bottom: 16px;
+    }
+    .hint strong { color: var(--accent); font-weight: 500; }
+    .bc-error { color: var(--danger); font-size: .75rem; margin-bottom: 16px; }
 
     /* ── Options row ── */
     .options-row {
@@ -274,6 +289,7 @@
       letter-spacing: .1em;
       text-transform: uppercase;
       padding: 10px 20px;
+      margin: 0;
       cursor: pointer;
       transition: border-color .2s, color .2s, background .2s;
       text-decoration: none;
@@ -290,6 +306,47 @@
       color: #0e0e0e;
     }
     .dl-btn.primary:hover { opacity: .85; }
+
+    /* ── Barcodes ── */
+    .bc-output { align-items: stretch; }
+    .bc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 16px;
+      width: 100%;
+    }
+    .bc-label {
+      background: #fff;
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 0 0 1px var(--border);
+    }
+    .bc-label svg { display: block; max-width: 100%; height: auto; }
+    .bc-actions { display: flex; gap: 6px; }
+    .bc-actions .dl-btn {
+      padding: 6px 12px;
+      font-size: .62rem;
+      color: #0e0e0e;
+      border-color: #ccc;
+    }
+    .bc-actions .dl-btn:hover {
+      background: #0e0e0e;
+      border-color: #0e0e0e;
+      color: var(--accent);
+    }
+    .bc-history { margin-top: 24px; }
+    .bc-history-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .bc-history-head .hint { margin: 0; }
 
     /* ── Footer ── */
     footer {
@@ -309,6 +366,25 @@
       .card, .output { padding: 24px; }
       .row { grid-template-columns: 1fr; }
       .options-row { flex-direction: column; align-items: flex-start; }
+      .tab-btn { flex: 1 1 30%; }
+    }
+
+    /* ── Printing barcode labels (only when "Print labels" is pressed) ── */
+    @media print {
+      body.print-bc { background: #fff; padding: 0; display: block; }
+      body.print-bc::before,
+      body.print-bc header,
+      body.print-bc .card,
+      body.print-bc footer,
+      body.print-bc #output { display: none !important; }
+      body.print-bc #bc-output {
+        display: block !important;
+        border: none; padding: 0; background: none; animation: none;
+      }
+      body.print-bc #bc-output .dl-row,
+      body.print-bc .bc-actions { display: none !important; }
+      body.print-bc .bc-grid { grid-template-columns: repeat(3, 1fr); gap: 6mm; }
+      body.print-bc .bc-label { box-shadow: none; padding: 0; break-inside: avoid; }
     }
   </style>
 </head>
@@ -328,6 +404,7 @@
       <button class="tab-btn" data-tab="wifi">Wi-Fi</button>
       <button class="tab-btn" data-tab="vcard">vCard</button>
       <button class="tab-btn" data-tab="email">Email</button>
+      <button class="tab-btn" data-tab="barcode">Barcode</button>
     </div>
 
     <!-- URL -->
@@ -412,6 +489,22 @@
       </div>
     </div>
 
+    <!-- Barcode -->
+    <div class="tab-pane" id="pane-barcode">
+      <div class="row">
+        <div class="field">
+          <label for="bc-prefix">Store name or initials</label>
+          <input type="text" id="bc-prefix" placeholder="NEE" maxlength="20" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="bc-qty">How many barcodes</label>
+          <input type="number" id="bc-qty" min="1" max="100" value="1" />
+        </div>
+      </div>
+      <p class="hint" id="bc-info">Codes will look like <strong>NEE-482913</strong>. Letters and digits only; accents and spaces are removed.</p>
+      <p class="bc-error" id="bc-error" hidden></p>
+    </div>
+
     <!-- Options -->
     <div class="options-row">
       <div class="opt-group">
@@ -422,7 +515,7 @@
         <label>Background</label>
         <input type="color" id="opt-bg" value="#ffffff" />
       </div>
-      <div class="opt-group">
+      <div class="opt-group" id="size-group">
         <label>Size</label>
         <input type="range" id="opt-size" min="128" max="512" step="32" value="256" />
         <span class="range-val" id="size-label">256</span>
@@ -432,7 +525,7 @@
     <button class="gen-btn" id="gen-btn">Generate QR Code</button>
   </div>
 
-  <!-- Output -->
+  <!-- QR output -->
   <div class="output" id="output">
     <div class="qr-wrap">
       <div id="qr-code"></div>
@@ -446,6 +539,33 @@
     </div>
   </div>
 
+  <!-- Barcode output -->
+  <div class="output bc-output" id="bc-output">
+    <div class="bc-grid" id="bc-grid"></div>
+    <div class="dl-row">
+      <button class="dl-btn primary" id="bc-print">Print labels</button>
+    </div>
+  </div>
+
+  <!-- Barcode history -->
+  <div class="card bc-history" id="bc-history" hidden>
+    <div class="bc-history-head">
+      <div>
+        <label>Codes already used</label>
+        <p class="hint" id="bc-count">None yet.</p>
+      </div>
+      <div class="dl-row">
+        <button class="dl-btn" id="bc-export">Export CSV</button>
+        <label class="dl-btn" for="bc-import">Import CSV</label>
+        <input type="file" id="bc-import" accept=".csv,.txt,text/csv,text/plain" hidden />
+      </div>
+    </div>
+    <p class="hint" id="bc-storage-note" style="margin-top:16px">
+      Used codes are remembered in this browser so a number is never given twice.
+      Export the list to keep a copy, and import it on another computer or browser.
+    </p>
+  </div>
+
   <footer>QR By DigitalMinds — client-side only, nothing is sent to any server.</footer>
 </div>
 
@@ -453,6 +573,7 @@
   // Tabs
   const tabBtns = document.querySelectorAll('.tab-btn');
   const tabPanes = document.querySelectorAll('.tab-pane');
+  const genBtn = document.getElementById('gen-btn');
   let activeTab = 'url';
 
   tabBtns.forEach(btn => {
@@ -462,6 +583,11 @@
       tabPanes.forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('pane-' + activeTab).classList.add('active');
+
+      const isBc = activeTab === 'barcode';
+      document.getElementById('size-group').style.display = isBc ? 'none' : '';
+      genBtn.textContent = isBc ? 'Generate Barcode' : 'Generate QR Code';
+      showOutputs();
     });
   });
 
@@ -510,7 +636,7 @@
 
   let qrInstance = null;
 
-  document.getElementById('gen-btn').addEventListener('click', () => {
+  function generateQR() {
     const content = buildContent();
     const size    = parseInt(sizeRange.value);
     const fg      = document.getElementById('opt-fg').value;
@@ -539,11 +665,15 @@
     out.classList.remove('visible');
     void out.offsetWidth;
     out.classList.add('visible');
+  }
+
+  genBtn.addEventListener('click', () => {
+    if (activeTab === 'barcode') generateBarcodes();
+    else generateQR();
 
     // Flash button
-    const btn = document.getElementById('gen-btn');
-    btn.classList.add('flash');
-    setTimeout(() => btn.classList.remove('flash'), 300);
+    genBtn.classList.add('flash');
+    setTimeout(() => genBtn.classList.remove('flash'), 300);
   });
 
   // Download PNG
@@ -574,6 +704,255 @@
       alert('Copy not supported in this browser — use Download instead.');
     }
   });
+
+  /* ══════════════════════════════════════════════
+     BARCODES — PREFIX-XXXXXX, never repeated per prefix
+     ══════════════════════════════════════════════ */
+
+  const STORE_KEY   = 'digitalminds-used-barcodes-v1';
+  const MAX_PER_PREFIX = 1000000;            // 000000 … 999999
+  const prefixInput = document.getElementById('bc-prefix');
+  const qtyInput    = document.getElementById('bc-qty');
+  const bcInfo      = document.getElementById('bc-info');
+  const bcError     = document.getElementById('bc-error');
+  const bcOutput    = document.getElementById('bc-output');
+  const bcGrid      = document.getElementById('bc-grid');
+  const bcHistory   = document.getElementById('bc-history');
+  const bcCount     = document.getElementById('bc-count');
+  const storageNote = document.getElementById('bc-storage-note');
+
+  // used = { NEE: { "482913": "2026-10-02T19:54:01.000Z", ... }, ... }
+  let used = {};
+  let storageOK = true;
+
+  function loadUsed() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      used = raw ? JSON.parse(raw) : {};
+      if (typeof used !== 'object' || used === null) used = {};
+    } catch (e) {
+      storageOK = false;
+      used = {};
+    }
+  }
+
+  function saveUsed() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(used));
+    } catch (e) {
+      storageOK = false;
+    }
+    if (!storageOK) {
+      storageNote.innerHTML = '<span style="color:var(--danger)">This browser isn\'t saving the used-codes list ' +
+        '(private window or storage blocked). Codes are unique for now, but export the list before closing the page.</span>';
+    }
+  }
+
+  // "Née Home" → "NEEHOME"
+  function cleanPrefix(raw) {
+    return raw
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+  }
+
+  // Unbiased random 000000–999999 using the browser's secure random generator
+  function random6() {
+    const buf = new Uint32Array(1);
+    let n;
+    do {
+      crypto.getRandomValues(buf);
+      n = buf[0];
+    } while (n >= 4294000000);               // multiple of 1,000,000 → no bias
+    return String(n % 1000000).padStart(6, '0');
+  }
+
+  function usedCount(prefix) {
+    return used[prefix] ? Object.keys(used[prefix]).length : 0;
+  }
+
+  function showBcError(msg) {
+    bcError.textContent = msg;
+    bcError.hidden = !msg;
+  }
+
+  function updateBcInfo() {
+    const p = cleanPrefix(prefixInput.value) || 'NEE';
+    const n = usedCount(p);
+    bcInfo.innerHTML = `Codes will look like <strong>${p}-482913</strong>. ` +
+      (n ? `${n.toLocaleString()} code${n === 1 ? '' : 's'} already used for ${p}.`
+         : 'Letters and digits only; accents and spaces are removed.');
+
+    const prefixes = Object.keys(used).filter(k => usedCount(k) > 0);
+    const total = prefixes.reduce((s, k) => s + usedCount(k), 0);
+    bcCount.textContent = total
+      ? `${total.toLocaleString()} code${total === 1 ? '' : 's'} across ${prefixes.length} name${prefixes.length === 1 ? '' : 's'}: ` +
+        prefixes.map(k => `${k} (${usedCount(k)})`).join(', ')
+      : 'None yet.';
+  }
+
+  function barcodeOptions(code, scale = 1) {
+    return {
+      format:       'CODE128',
+      text:         code,
+      displayValue: true,
+      font:         'monospace',
+      fontSize:     16 * scale,
+      textMargin:   4 * scale,
+      height:       70 * scale,
+      width:        2 * scale,
+      margin:       12 * scale,
+      lineColor:    document.getElementById('opt-fg').value,
+      background:   document.getElementById('opt-bg').value
+    };
+  }
+
+  function generateBarcodes() {
+    showBcError('');
+    if (typeof JsBarcode === 'undefined') {
+      showBcError('The barcode library didn\'t load. Check the internet connection and reload the page.');
+      return;
+    }
+
+    const prefix = cleanPrefix(prefixInput.value);
+    if (!prefix) {
+      showBcError('Type your store name or initials first (English letters or digits).');
+      prefixInput.focus();
+      return;
+    }
+
+    const qty = Math.min(100, Math.max(1, parseInt(qtyInput.value, 10) || 1));
+    qtyInput.value = qty;
+
+    if (!used[prefix]) used[prefix] = {};
+    const codes = used[prefix];
+    const free = MAX_PER_PREFIX - Object.keys(codes).length;
+    if (qty > free) {
+      showBcError(`Only ${free.toLocaleString()} unused numbers are left for ${prefix}. Use a different name or initials.`);
+      return;
+    }
+
+    // Reserve each new number before showing it, so it can never be issued again
+    const now = new Date().toISOString();
+    const fresh = [];
+    while (fresh.length < qty) {
+      const digits = random6();
+      if (!codes[digits]) {
+        codes[digits] = now;
+        fresh.push(`${prefix}-${digits}`);
+      }
+    }
+    saveUsed();
+    renderBarcodes(fresh);
+    updateBcInfo();
+  }
+
+  function renderBarcodes(list) {
+    bcGrid.innerHTML = '';
+    list.forEach(code => {
+      const label = document.createElement('div');
+      label.className = 'bc-label';
+
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      JsBarcode(svg, code, barcodeOptions(code));
+
+      const actions = document.createElement('div');
+      actions.className = 'bc-actions';
+
+      const pngBtn = document.createElement('button');
+      pngBtn.className = 'dl-btn';
+      pngBtn.textContent = '↓ PNG';
+      pngBtn.addEventListener('click', () => downloadBarcodePNG(code));
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'dl-btn';
+      copyBtn.textContent = 'Copy code';
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(code);
+          copyBtn.textContent = '✓ Copied';
+          setTimeout(() => copyBtn.textContent = 'Copy code', 1500);
+        } catch (e) {
+          prompt('Copy this code:', code);
+        }
+      });
+
+      actions.append(pngBtn, copyBtn);
+      label.append(svg, actions);
+      bcGrid.append(label);
+    });
+
+    bcOutput.classList.remove('visible');
+    void bcOutput.offsetWidth;
+    showOutputs();
+  }
+
+  // High-resolution PNG (double size) for printing on labels
+  function downloadBarcodePNG(code) {
+    const canvas = document.createElement('canvas');
+    JsBarcode(canvas, code, barcodeOptions(code, 2));
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `${code}.png`;
+    a.click();
+  }
+
+  // Show the QR result or the barcode result, depending on the open tab
+  function showOutputs() {
+    const isBc = activeTab === 'barcode';
+    document.getElementById('output').classList.toggle('visible', !isBc && qrInstance !== null);
+    bcOutput.classList.toggle('visible', isBc && bcGrid.children.length > 0);
+    bcHistory.hidden = !isBc;
+  }
+
+  // Print only the barcode labels
+  document.getElementById('bc-print').addEventListener('click', () => {
+    document.body.classList.add('print-bc');
+    window.print();
+  });
+  window.addEventListener('afterprint', () => document.body.classList.remove('print-bc'));
+
+  // Export every used code as CSV
+  document.getElementById('bc-export').addEventListener('click', () => {
+    const rows = [['code', 'store', 'created']];
+    Object.keys(used).sort().forEach(p => {
+      Object.keys(used[p]).sort().forEach(d => rows.push([`${p}-${d}`, p, used[p][d]]));
+    });
+    const csv = rows.map(r => r.join(',')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'used-barcodes.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+
+  // Import a CSV (or any list) with codes like NEE-482913 in the first column
+  document.getElementById('bc-import').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    let added = 0;
+    text.split(/\r?\n/).forEach(line => {
+      const first = line.split(/[,;\t]/)[0].trim().replace(/^"|"$/g, '').toUpperCase();
+      const m = first.match(/^([A-Z0-9]+)-(\d{6})$/);
+      if (!m) return;
+      const [, p, d] = m;
+      if (!used[p]) used[p] = {};
+      if (!used[p][d]) { used[p][d] = 'imported'; added++; }
+    });
+    saveUsed();
+    updateBcInfo();
+    e.target.value = '';
+    alert(added ? `${added} code${added === 1 ? '' : 's'} added to the used list.` : 'No new codes found in that file.');
+  });
+
+  prefixInput.addEventListener('input', () => { showBcError(''); updateBcInfo(); });
+  prefixInput.addEventListener('keydown', e => { if (e.key === 'Enter') genBtn.click(); });
+  qtyInput.addEventListener('keydown', e => { if (e.key === 'Enter') genBtn.click(); });
+
+  loadUsed();
+  updateBcInfo();
 </script>
 </body>
 </html>
