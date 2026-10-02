@@ -553,7 +553,7 @@
     <div class="bc-history-head">
       <div>
         <label>Codes already used</label>
-        <p class="hint" id="bc-count">None yet.</p>
+        <p class="hint" id="bc-count">Type a store name above to see how many codes it has used.</p>
       </div>
       <div class="dl-row">
         <button class="dl-btn" id="bc-export">Export CSV</button>
@@ -728,9 +728,11 @@
   const bcCount     = document.getElementById('bc-count');
   const storageNote = document.getElementById('bc-storage-note');
 
-  // stats = { NEE: 12, ABC: 3 }: how many codes each name has used, as stored on the server
-  let stats = {};
-  let busy  = false;
+  // counts = { NEE: 12 }: used-code counts, only for names typed on this visit.
+  // The sheet never sends the list of all names, so visitors can't see other stores.
+  let counts     = {};
+  let busy       = false;
+  let countTimer = null;
 
   const NOT_SET_MSG = 'Barcodes aren\'t connected to your Google Sheet yet. Paste the web app address into ' +
                       'SHEET_API_URL at the top of this page\'s script.';
@@ -742,14 +744,15 @@
   }
 
   // Talk to the Google Apps Script web app.
-  // GET to read; POST with a plain-text JSON body (no custom headers, so browsers allow it from any site).
-  async function api(action, body) {
+  // GET to read (query = extra URL parameters); POST with a plain-text JSON body
+  // (no custom headers, so browsers allow it from any site).
+  async function api(action, { query = {}, body } = {}) {
     if (!apiConfigured()) throw new Error(NOT_SET_MSG);
     const url = SHEET_API_URL.trim();
     let res;
     try {
       res = body === undefined
-        ? await fetch(`${url}?action=${encodeURIComponent(action)}`, { cache: 'no-store' })
+        ? await fetch(`${url}?${new URLSearchParams({ action, ...query })}`, { cache: 'no-store' })
         : await fetch(url, { method: 'POST', body: JSON.stringify({ action, ...body }) });
     } catch (e) {
       throw new Error(NO_REACH_MSG);
@@ -770,28 +773,47 @@
     storageNote.style.color = isError ? 'var(--danger)' : '';
   }
 
-  // Move codes saved by the older browser-only version onto the server, once
+  // Move codes saved by the older browser-only version onto the sheet, once
   async function migrateOldBrowserList() {
     let old = null;
     try { old = JSON.parse(localStorage.getItem(OLD_STORE_KEY) || 'null'); } catch (e) { return; }
     if (!old || typeof old !== 'object') return;
     const lines = [];
     Object.keys(old).forEach(p => Object.keys(old[p] || {}).forEach(d => lines.push(`${p}-${d}`)));
-    if (lines.length) await api('import', { csv: lines.join('\n') });
+    if (lines.length) await api('import', { body: { csv: lines.join('\n') } });
     try { localStorage.removeItem(OLD_STORE_KEY); } catch (e) {}
   }
 
-  async function loadStats() {
+  // Check the connection once when the page opens
+  async function checkConnection() {
     try {
       await migrateOldBrowserList();
-      const data = await api('stats');
-      stats = data.stats || {};
+      await api('ping');
       setStorageNote('Used codes are saved in your Google Sheet, so they stay after a refresh and every ' +
         'computer that opens this page shares the same list. Don\'t delete rows in the sheet.');
     } catch (e) {
       setStorageNote(e.message, true);
     }
+    scheduleCount(0);
+  }
+
+  // Ask the sheet how many codes one name has used (never the other names)
+  async function fetchCount(prefix) {
+    try {
+      const data = await api('stats', { query: { prefix } });
+      counts[prefix] = data.count;
+    } catch (e) {
+      counts[prefix] = 'error';
+    }
     updateBcInfo();
+  }
+
+  // Wait until typing pauses, then check the name in the box
+  function scheduleCount(delay = 400) {
+    clearTimeout(countTimer);
+    const p = cleanPrefix(prefixInput.value);
+    if (!p || !apiConfigured()) return;
+    countTimer = setTimeout(() => fetchCount(p), delay);
   }
 
   // "Née Home" → "NEEHOME"
@@ -802,29 +824,29 @@
       .replace(/[^A-Z0-9]/g, '');
   }
 
-  function usedCount(prefix) {
-    return Object.prototype.hasOwnProperty.call(stats, prefix) ? stats[prefix] : 0;
-  }
-
   function showBcError(msg) {
     bcError.textContent = msg;
     bcError.hidden = !msg;
   }
 
+  const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+  // Only ever shows the name typed in the box
   function updateBcInfo() {
     const typed = cleanPrefix(prefixInput.value);
     const p = typed || 'NAME';
-    const n = typed ? usedCount(typed) : 0;   // no count for the example
-    bcInfo.innerHTML = `Codes will look like <strong>${p}-482913</strong>. ` +
-      (n ? `${n.toLocaleString()} code${n === 1 ? '' : 's'} already used for ${p}.`
-         : 'Letters and digits only; accents and spaces are removed.');
+    const n = typed ? counts[typed] : undefined;
 
-    const prefixes = Object.keys(stats).filter(k => usedCount(k) > 0);
-    const total = prefixes.reduce((s, k) => s + usedCount(k), 0);
-    bcCount.textContent = total
-      ? `${total.toLocaleString()} code${total === 1 ? '' : 's'} across ${prefixes.length} name${prefixes.length === 1 ? '' : 's'}: ` +
-        prefixes.map(k => `${k} (${usedCount(k)})`).join(', ')
-      : 'None yet.';
+    bcInfo.innerHTML = `Codes will look like <strong>${p}-482913</strong>. ` +
+      (typeof n === 'number' && n > 0
+        ? `${plural(n, 'code')} already used for ${p}.`
+        : 'Letters and digits only; accents and spaces are removed.');
+
+    if (!typed)                     bcCount.textContent = 'Type a store name above to see how many codes it has used.';
+    else if (typeof n === 'number') bcCount.textContent = n ? `${plural(n, 'code')} used for ${typed}.`
+                                                            : `No codes used for ${typed} yet.`;
+    else if (n === 'error')         bcCount.textContent = `Couldn't check ${typed} right now.`;
+    else                            bcCount.textContent = `Checking ${typed}…`;
   }
 
   function barcodeOptions(code, scale = 1) {
@@ -867,8 +889,8 @@
     genBtn.disabled = true;
     genBtn.textContent = 'Saving…';
     try {
-      const data = await api('generate', { prefix, qty });
-      stats = data.stats || stats;
+      const data = await api('generate', { body: { prefix, qty } });
+      counts[prefix] = data.count;
       renderBarcodes(data.codes);
       updateBcInfo();
     } catch (e) {
@@ -1051,14 +1073,17 @@
   });
   window.addEventListener('afterprint', () => document.body.classList.remove('print-bc'));
 
-  // Export every used code as CSV, straight from the Google Sheet
+  // Export the used codes of the name typed in the box only (never other stores')
   document.getElementById('bc-export').addEventListener('click', async () => {
     showBcError('');
+    const prefix = cleanPrefix(prefixInput.value);
     try {
+      if (!prefix) throw new Error('Type the store name first, then export its codes.');
       if (!apiConfigured()) throw new Error(NOT_SET_MSG);
       let res;
       try {
-        res = await fetch(`${SHEET_API_URL.trim()}?action=export`, { cache: 'no-store' });
+        const params = new URLSearchParams({ action: 'export', prefix });
+        res = await fetch(`${SHEET_API_URL.trim()}?${params}`, { cache: 'no-store' });
       } catch (e) {
         throw new Error(NO_REACH_MSG);
       }
@@ -1069,7 +1094,7 @@
       const blob = await res.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'used-barcodes.csv';
+      a.download = `${prefix}-used-barcodes.csv`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     } catch (e) {
@@ -1083,11 +1108,12 @@
     if (!file) return;
     showBcError('');
     try {
-      const data = await api('import', { csv: await file.text() });
-      stats = data.stats || stats;
+      const data = await api('import', { body: { csv: await file.text() } });
+      counts = {};
       updateBcInfo();
+      scheduleCount(0);
       alert(data.added
-        ? `${data.added} code${data.added === 1 ? '' : 's'} added to the used list.`
+        ? `${plural(data.added, 'code')} added to the used list.`
         : 'No new codes found in that file.');
     } catch (err) {
       showBcError(err.message);
@@ -1096,12 +1122,12 @@
     }
   });
 
-  prefixInput.addEventListener('input', () => { showBcError(''); updateBcInfo(); });
+  prefixInput.addEventListener('input', () => { showBcError(''); updateBcInfo(); scheduleCount(); });
   prefixInput.addEventListener('keydown', e => { if (e.key === 'Enter') genBtn.click(); });
   qtyInput.addEventListener('keydown', e => { if (e.key === 'Enter') genBtn.click(); });
 
   updateBcInfo();
-  loadStats();
+  checkConnection();
 </script>
 </body>
 </html>
